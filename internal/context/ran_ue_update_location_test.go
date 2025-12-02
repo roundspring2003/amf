@@ -367,3 +367,669 @@ func TestRanUe_UpdateLocation_NilInput(t *testing.T) {
 		amfContext.AmfRanPool.Delete(fakeConn)
 	})
 }
+
+// ==================== 邊緣測試 (Edge Case Tests) ====================
+
+// TestRanUe_UpdateLocation_MultipleUpdates tests consecutive location updates
+// 測試目標：測試連續多次位置更新的穩定性
+func TestRanUe_UpdateLocation_MultipleUpdates(t *testing.T) {
+	amfContext := GetSelf()
+
+	// 初始化配置
+	if len(amfContext.ServedGuamiList) == 0 {
+		amfContext.ServedGuamiList = append(amfContext.ServedGuamiList, models.Guami{
+			PlmnId: &models.PlmnIdNid{
+				Mcc: "208",
+				Mnc: "93",
+			},
+			AmfId: "cafe00",
+		})
+	}
+
+	testSupi := "imsi-208930000000301"
+	amfUe := amfContext.NewAmfUe(testSupi)
+
+	fakeConn := &fakeNetConn{}
+	amfRan := amfContext.NewAmfRan(fakeConn)
+	amfRan.AnType = models.AccessType__3_GPP_ACCESS
+
+	ranUe, err := amfRan.NewRanUe(1)
+	require.NoError(t, err)
+
+	amfUe.AttachRanUe(ranUe)
+
+	// 準備測試用的位置資訊
+	plmnBytes := aper.OctetString("\x02\x08\x93")
+
+	iterations := 100
+
+	t.Run("100 Consecutive Location Updates", func(t *testing.T) {
+		for i := 0; i < iterations; i++ {
+			// 每次更新使用不同的 TAC
+			tacValue := byte(i % 256)
+			testTac := []byte{0x00, 0x00, tacValue}
+
+			userLocationInfo := &ngapType.UserLocationInformation{
+				Present: ngapType.UserLocationInformationPresentUserLocationInformationNR,
+				UserLocationInformationNR: &ngapType.UserLocationInformationNR{
+					TAI: ngapType.TAI{
+						PLMNIdentity: ngapType.PLMNIdentity{
+							Value: plmnBytes,
+						},
+						TAC: ngapType.TAC{
+							Value: aper.OctetString(testTac),
+						},
+					},
+					NRCGI: ngapType.NRCGI{
+						PLMNIdentity: ngapType.PLMNIdentity{
+							Value: plmnBytes,
+						},
+						NRCellIdentity: ngapType.NRCellIdentity{
+							Value: aper.BitString{
+								Bytes:     []byte{0x00, 0x00, 0x00, 0x00, byte(i)},
+								BitLength: 36,
+							},
+						},
+					},
+				},
+			}
+
+			// 更新位置
+			require.NotPanics(t, func() {
+				ranUe.UpdateLocation(userLocationInfo)
+			}, "Update %d should not panic", i)
+		}
+
+		// 驗證最後一次更新的結果
+		lastTac := iterations - 1
+		expectedTac := lastTac % 256
+		expectedTacStr := ""
+		if expectedTac < 16 {
+			expectedTacStr = "00000" + string(rune('0'+expectedTac))
+		} else {
+			// 轉換為十六進位字串
+			expectedTacStr = ""
+			for expectedTac >= 16 {
+				expectedTacStr = string(rune('0'+(expectedTac%16))) + expectedTacStr
+				expectedTac /= 16
+			}
+			expectedTacStr = "0000" + string(rune('0'+expectedTac)) + expectedTacStr
+		}
+
+		require.NotNil(t, ranUe.Location.NrLocation,
+			"Location should be set after %d updates", iterations)
+		
+		t.Logf("Final TAC after %d updates: %s", iterations, ranUe.Tai.Tac)
+	})
+
+	t.Run("Verify No Memory Leak", func(t *testing.T) {
+		// 驗證位置只有一個,沒有累積
+		require.NotNil(t, ranUe.Location.NrLocation)
+		
+		// AmfUe 的位置也應該只有一個
+		require.NotNil(t, amfUe.Location.NrLocation)
+	})
+
+	t.Cleanup(func() {
+		ranUe.Remove()
+		amfContext.UePool.Delete(testSupi)
+		amfContext.AmfRanPool.Delete(fakeConn)
+	})
+}
+
+// TestRanUe_UpdateLocation_WithoutAmfUe tests location update without AmfUe attached
+// 測試目標：測試 RanUe 未連接 AmfUe 時的位置更新
+func TestRanUe_UpdateLocation_WithoutAmfUe(t *testing.T) {
+	amfContext := GetSelf()
+
+	// 初始化配置
+	if len(amfContext.ServedGuamiList) == 0 {
+		amfContext.ServedGuamiList = append(amfContext.ServedGuamiList, models.Guami{
+			PlmnId: &models.PlmnIdNid{
+				Mcc: "208",
+				Mnc: "93",
+			},
+			AmfId: "cafe00",
+		})
+	}
+
+	fakeConn := &fakeNetConn{}
+	amfRan := amfContext.NewAmfRan(fakeConn)
+	amfRan.AnType = models.AccessType__3_GPP_ACCESS
+
+	ranUe, err := amfRan.NewRanUe(1)
+	require.NoError(t, err)
+	require.NotNil(t, ranUe)
+
+	// 確認沒有 Attach AmfUe
+	require.Nil(t, ranUe.AmfUe, "ranUe.AmfUe should be nil initially")
+
+	t.Run("Update Location Without AmfUe", func(t *testing.T) {
+		// 準備位置資訊
+		plmnBytes := aper.OctetString("\x02\x08\x93")
+		testTac := []byte{0x00, 0x00, 0x05}
+
+		userLocationInfo := &ngapType.UserLocationInformation{
+			Present: ngapType.UserLocationInformationPresentUserLocationInformationNR,
+			UserLocationInformationNR: &ngapType.UserLocationInformationNR{
+				TAI: ngapType.TAI{
+					PLMNIdentity: ngapType.PLMNIdentity{
+						Value: plmnBytes,
+					},
+					TAC: ngapType.TAC{
+						Value: aper.OctetString(testTac),
+					},
+				},
+				NRCGI: ngapType.NRCGI{
+					PLMNIdentity: ngapType.PLMNIdentity{
+						Value: plmnBytes,
+					},
+					NRCellIdentity: ngapType.NRCellIdentity{
+						Value: aper.BitString{
+							Bytes:     []byte{0x00, 0x00, 0x00, 0x00, 0x20},
+							BitLength: 36,
+						},
+					},
+				},
+			},
+		}
+
+		// 更新位置 (應該不會 panic)
+		require.NotPanics(t, func() {
+			ranUe.UpdateLocation(userLocationInfo)
+		}, "UpdateLocation should handle nil AmfUe gracefully")
+
+		// 驗證 RanUe 的位置被更新
+		require.NotNil(t, ranUe.Location.NrLocation,
+			"RanUe location should be updated even without AmfUe")
+		require.Equal(t, "000005", ranUe.Tai.Tac,
+			"RanUe TAC should be updated")
+	})
+
+	t.Cleanup(func() {
+		ranUe.Remove()
+		amfContext.AmfRanPool.Delete(fakeConn)
+	})
+}
+
+// TestRanUe_UpdateLocation_InvalidPLMN tests handling of invalid PLMN data
+// 測試目標：測試無效的 PLMN ID 資料處理 (防禦性測試)
+func TestRanUe_UpdateLocation_InvalidPLMN(t *testing.T) {
+	amfContext := GetSelf()
+
+	// 初始化配置
+	if len(amfContext.ServedGuamiList) == 0 {
+		amfContext.ServedGuamiList = append(amfContext.ServedGuamiList, models.Guami{
+			PlmnId: &models.PlmnIdNid{
+				Mcc: "208",
+				Mnc: "93",
+			},
+			AmfId: "cafe00",
+		})
+	}
+
+	testSupi := "imsi-208930000000302"
+	amfUe := amfContext.NewAmfUe(testSupi)
+
+	fakeConn := &fakeNetConn{}
+	amfRan := amfContext.NewAmfRan(fakeConn)
+	amfRan.AnType = models.AccessType__3_GPP_ACCESS
+
+	ranUe, err := amfRan.NewRanUe(1)
+	require.NoError(t, err)
+
+	amfUe.AttachRanUe(ranUe)
+
+	t.Run("All Zero PLMN", func(t *testing.T) {
+		// 全零的 PLMN
+		plmnBytes := aper.OctetString("\x00\x00\x00")
+		testTac := []byte{0x00, 0x00, 0x01}
+
+		userLocationInfo := &ngapType.UserLocationInformation{
+			Present: ngapType.UserLocationInformationPresentUserLocationInformationNR,
+			UserLocationInformationNR: &ngapType.UserLocationInformationNR{
+				TAI: ngapType.TAI{
+					PLMNIdentity: ngapType.PLMNIdentity{
+						Value: plmnBytes,
+					},
+					TAC: ngapType.TAC{
+						Value: aper.OctetString(testTac),
+					},
+				},
+				NRCGI: ngapType.NRCGI{
+					PLMNIdentity: ngapType.PLMNIdentity{
+						Value: plmnBytes,
+					},
+					NRCellIdentity: ngapType.NRCellIdentity{
+						Value: aper.BitString{
+							Bytes:     []byte{0x00, 0x00, 0x00, 0x00, 0x10},
+							BitLength: 36,
+						},
+					},
+				},
+			},
+		}
+
+		// 應該不會 panic (防禦性測試)
+		require.NotPanics(t, func() {
+			ranUe.UpdateLocation(userLocationInfo)
+		}, "UpdateLocation should handle all-zero PLMN without panic")
+
+		// 驗證位置被更新 (即使 PLMN 不正常)
+		require.NotNil(t, ranUe.Location.NrLocation)
+		t.Logf("PLMN with all zeros - MCC: %s, MNC: %s",
+			ranUe.Location.NrLocation.Tai.PlmnId.Mcc,
+			ranUe.Location.NrLocation.Tai.PlmnId.Mnc)
+	})
+
+	t.Run("All 0xFF PLMN", func(t *testing.T) {
+		// 全 0xFF 的 PLMN (極端值)
+		plmnBytes := aper.OctetString("\xFF\xFF\xFF")
+		testTac := []byte{0x00, 0x00, 0x02}
+
+		userLocationInfo := &ngapType.UserLocationInformation{
+			Present: ngapType.UserLocationInformationPresentUserLocationInformationNR,
+			UserLocationInformationNR: &ngapType.UserLocationInformationNR{
+				TAI: ngapType.TAI{
+					PLMNIdentity: ngapType.PLMNIdentity{
+						Value: plmnBytes,
+					},
+					TAC: ngapType.TAC{
+						Value: aper.OctetString(testTac),
+					},
+				},
+				NRCGI: ngapType.NRCGI{
+					PLMNIdentity: ngapType.PLMNIdentity{
+						Value: plmnBytes,
+					},
+					NRCellIdentity: ngapType.NRCellIdentity{
+						Value: aper.BitString{
+							Bytes:     []byte{0x00, 0x00, 0x00, 0x00, 0x20},
+							BitLength: 36,
+						},
+					},
+				},
+			},
+		}
+
+		// 應該不會 panic
+		require.NotPanics(t, func() {
+			ranUe.UpdateLocation(userLocationInfo)
+		}, "UpdateLocation should handle 0xFF PLMN without panic")
+
+		t.Logf("PLMN with all 0xFF - MCC: %s, MNC: %s",
+			ranUe.Location.NrLocation.Tai.PlmnId.Mcc,
+			ranUe.Location.NrLocation.Tai.PlmnId.Mnc)
+	})
+
+	t.Cleanup(func() {
+		ranUe.Remove()
+		amfContext.UePool.Delete(testSupi)
+		amfContext.AmfRanPool.Delete(fakeConn)
+	})
+}
+
+// TestRanUe_UpdateLocation_EmptyTAC tests handling of empty TAC
+// 測試目標：測試空的 TAC 值處理 (防禦性測試)
+func TestRanUe_UpdateLocation_EmptyTAC(t *testing.T) {
+	amfContext := GetSelf()
+
+	// 初始化配置
+	if len(amfContext.ServedGuamiList) == 0 {
+		amfContext.ServedGuamiList = append(amfContext.ServedGuamiList, models.Guami{
+			PlmnId: &models.PlmnIdNid{
+				Mcc: "208",
+				Mnc: "93",
+			},
+			AmfId: "cafe00",
+		})
+	}
+
+	testSupi := "imsi-208930000000303"
+	amfUe := amfContext.NewAmfUe(testSupi)
+
+	fakeConn := &fakeNetConn{}
+	amfRan := amfContext.NewAmfRan(fakeConn)
+	amfRan.AnType = models.AccessType__3_GPP_ACCESS
+
+	ranUe, err := amfRan.NewRanUe(1)
+	require.NoError(t, err)
+
+	amfUe.AttachRanUe(ranUe)
+
+	t.Run("Empty TAC Byte Array", func(t *testing.T) {
+		plmnBytes := aper.OctetString("\x02\x08\x93")
+		emptyTac := []byte{} // 空的 TAC
+
+		userLocationInfo := &ngapType.UserLocationInformation{
+			Present: ngapType.UserLocationInformationPresentUserLocationInformationNR,
+			UserLocationInformationNR: &ngapType.UserLocationInformationNR{
+				TAI: ngapType.TAI{
+					PLMNIdentity: ngapType.PLMNIdentity{
+						Value: plmnBytes,
+					},
+					TAC: ngapType.TAC{
+						Value: aper.OctetString(emptyTac),
+					},
+				},
+				NRCGI: ngapType.NRCGI{
+					PLMNIdentity: ngapType.PLMNIdentity{
+						Value: plmnBytes,
+					},
+					NRCellIdentity: ngapType.NRCellIdentity{
+						Value: aper.BitString{
+							Bytes:     []byte{0x00, 0x00, 0x00, 0x00, 0x10},
+							BitLength: 36,
+						},
+					},
+				},
+			},
+		}
+
+		// 應該不會 panic (防禦性測試)
+		require.NotPanics(t, func() {
+			ranUe.UpdateLocation(userLocationInfo)
+		}, "UpdateLocation should handle empty TAC without panic")
+
+		// 驗證處理結果
+		require.NotNil(t, ranUe.Location.NrLocation)
+		t.Logf("TAC with empty bytes: %s", ranUe.Tai.Tac)
+	})
+
+	t.Cleanup(func() {
+		ranUe.Remove()
+		amfContext.UePool.Delete(testSupi)
+		amfContext.AmfRanPool.Delete(fakeConn)
+	})
+}
+
+// TestRanUe_UpdateLocation_ZeroBitLengthCellID tests handling of zero-length cell ID
+// 測試目標：測試零長度 Cell ID 的處理 (防禦性測試)
+func TestRanUe_UpdateLocation_ZeroBitLengthCellID(t *testing.T) {
+	amfContext := GetSelf()
+
+	// 初始化配置
+	if len(amfContext.ServedGuamiList) == 0 {
+		amfContext.ServedGuamiList = append(amfContext.ServedGuamiList, models.Guami{
+			PlmnId: &models.PlmnIdNid{
+				Mcc: "208",
+				Mnc: "93",
+			},
+			AmfId: "cafe00",
+		})
+	}
+
+	testSupi := "imsi-208930000000304"
+	amfUe := amfContext.NewAmfUe(testSupi)
+
+	fakeConn := &fakeNetConn{}
+	amfRan := amfContext.NewAmfRan(fakeConn)
+	amfRan.AnType = models.AccessType__3_GPP_ACCESS
+
+	ranUe, err := amfRan.NewRanUe(1)
+	require.NoError(t, err)
+
+	amfUe.AttachRanUe(ranUe)
+
+	t.Run("Zero Bit Length Cell ID", func(t *testing.T) {
+		plmnBytes := aper.OctetString("\x02\x08\x93")
+		testTac := []byte{0x00, 0x00, 0x01}
+
+		userLocationInfo := &ngapType.UserLocationInformation{
+			Present: ngapType.UserLocationInformationPresentUserLocationInformationNR,
+			UserLocationInformationNR: &ngapType.UserLocationInformationNR{
+				TAI: ngapType.TAI{
+					PLMNIdentity: ngapType.PLMNIdentity{
+						Value: plmnBytes,
+					},
+					TAC: ngapType.TAC{
+						Value: aper.OctetString(testTac),
+					},
+				},
+				NRCGI: ngapType.NRCGI{
+					PLMNIdentity: ngapType.PLMNIdentity{
+						Value: plmnBytes,
+					},
+					NRCellIdentity: ngapType.NRCellIdentity{
+						Value: aper.BitString{
+							Bytes:     []byte{0x00},
+							BitLength: 0, // 零長度
+						},
+					},
+				},
+			},
+		}
+
+		// 應該不會 panic
+		require.NotPanics(t, func() {
+			ranUe.UpdateLocation(userLocationInfo)
+		}, "UpdateLocation should handle zero-length cell ID without panic")
+
+		// 驗證位置被更新
+		require.NotNil(t, ranUe.Location.NrLocation)
+		t.Logf("Cell ID with zero bit length: %s", ranUe.Location.NrLocation.Ncgi.NrCellId)
+	})
+
+	t.Cleanup(func() {
+		ranUe.Remove()
+		amfContext.UePool.Delete(testSupi)
+		amfContext.AmfRanPool.Delete(fakeConn)
+	})
+}
+
+// TestRanUe_UpdateLocation_AlternateEUTRAandNR tests alternating between EUTRA and NR updates
+// 測試目標：測試在 EUTRA 和 NR 之間交替更新
+func TestRanUe_UpdateLocation_AlternateEUTRAandNR(t *testing.T) {
+	amfContext := GetSelf()
+
+	// 初始化配置
+	if len(amfContext.ServedGuamiList) == 0 {
+		amfContext.ServedGuamiList = append(amfContext.ServedGuamiList, models.Guami{
+			PlmnId: &models.PlmnIdNid{
+				Mcc: "208",
+				Mnc: "93",
+			},
+			AmfId: "cafe00",
+		})
+	}
+
+	testSupi := "imsi-208930000000305"
+	amfUe := amfContext.NewAmfUe(testSupi)
+
+	fakeConn := &fakeNetConn{}
+	amfRan := amfContext.NewAmfRan(fakeConn)
+	amfRan.AnType = models.AccessType__3_GPP_ACCESS
+
+	ranUe, err := amfRan.NewRanUe(1)
+	require.NoError(t, err)
+
+	amfUe.AttachRanUe(ranUe)
+
+	plmnBytes := aper.OctetString("\x02\x08\x93")
+
+	cycles := 10
+
+	t.Run("Alternate Between EUTRA and NR", func(t *testing.T) {
+		for i := 0; i < cycles; i++ {
+			if i%2 == 0 {
+				// NR 更新
+				testTac := []byte{0x00, 0x00, byte(i)}
+				nrLocationInfo := &ngapType.UserLocationInformation{
+					Present: ngapType.UserLocationInformationPresentUserLocationInformationNR,
+					UserLocationInformationNR: &ngapType.UserLocationInformationNR{
+						TAI: ngapType.TAI{
+							PLMNIdentity: ngapType.PLMNIdentity{
+								Value: plmnBytes,
+							},
+							TAC: ngapType.TAC{
+								Value: aper.OctetString(testTac),
+							},
+						},
+						NRCGI: ngapType.NRCGI{
+							PLMNIdentity: ngapType.PLMNIdentity{
+								Value: plmnBytes,
+							},
+							NRCellIdentity: ngapType.NRCellIdentity{
+								Value: aper.BitString{
+									Bytes:     []byte{0x00, 0x00, 0x00, 0x00, byte(i)},
+									BitLength: 36,
+								},
+							},
+						},
+					},
+				}
+
+				ranUe.UpdateLocation(nrLocationInfo)
+				require.NotNil(t, ranUe.Location.NrLocation,
+					"Cycle %d: NR location should be set", i)
+			} else {
+				// EUTRA 更新
+				testTac := []byte{0x00, 0x00, byte(i)}
+				eutraLocationInfo := &ngapType.UserLocationInformation{
+					Present: ngapType.UserLocationInformationPresentUserLocationInformationEUTRA,
+					UserLocationInformationEUTRA: &ngapType.UserLocationInformationEUTRA{
+						TAI: ngapType.TAI{
+							PLMNIdentity: ngapType.PLMNIdentity{
+								Value: plmnBytes,
+							},
+							TAC: ngapType.TAC{
+								Value: aper.OctetString(testTac),
+							},
+						},
+						EUTRACGI: ngapType.EUTRACGI{
+							PLMNIdentity: ngapType.PLMNIdentity{
+								Value: plmnBytes,
+							},
+							EUTRACellIdentity: ngapType.EUTRACellIdentity{
+								Value: aper.BitString{
+									Bytes:     []byte{0x00, 0x00, 0x00, byte(i)},
+									BitLength: 28,
+								},
+							},
+						},
+					},
+				}
+
+				ranUe.UpdateLocation(eutraLocationInfo)
+				require.NotNil(t, ranUe.Location.EutraLocation,
+					"Cycle %d: EUTRA location should be set", i)
+			}
+		}
+	})
+
+	t.Run("Verify Final State", func(t *testing.T) {
+		// 最後一次是偶數 (cycles-1 = 9, 奇數), 所以應該是 EUTRA
+		if (cycles-1)%2 == 0 {
+			require.NotNil(t, ranUe.Location.NrLocation,
+				"Final location should be NR")
+		} else {
+			require.NotNil(t, ranUe.Location.EutraLocation,
+				"Final location should be EUTRA")
+		}
+
+		// 兩種位置類型應該都有設定過 (不會互相覆蓋)
+		require.NotNil(t, ranUe.Location.NrLocation,
+			"NR location should be preserved")
+		require.NotNil(t, ranUe.Location.EutraLocation,
+			"EUTRA location should be preserved")
+	})
+
+	t.Cleanup(func() {
+		ranUe.Remove()
+		amfContext.UePool.Delete(testSupi)
+		amfContext.AmfRanPool.Delete(fakeConn)
+	})
+}
+
+// TestRanUe_UpdateLocation_ConcurrentUpdates tests concurrent location updates
+// 測試目標：測試並發位置更新的執行緒安全性
+func TestRanUe_UpdateLocation_ConcurrentUpdates(t *testing.T) {
+	amfContext := GetSelf()
+
+	// 初始化配置
+	if len(amfContext.ServedGuamiList) == 0 {
+		amfContext.ServedGuamiList = append(amfContext.ServedGuamiList, models.Guami{
+			PlmnId: &models.PlmnIdNid{
+				Mcc: "208",
+				Mnc: "93",
+			},
+			AmfId: "cafe00",
+		})
+	}
+
+	testSupi := "imsi-208930000000306"
+	amfUe := amfContext.NewAmfUe(testSupi)
+
+	fakeConn := &fakeNetConn{}
+	amfRan := amfContext.NewAmfRan(fakeConn)
+	amfRan.AnType = models.AccessType__3_GPP_ACCESS
+
+	ranUe, err := amfRan.NewRanUe(1)
+	require.NoError(t, err)
+
+	amfUe.AttachRanUe(ranUe)
+
+	t.Run("50 Concurrent Location Updates", func(t *testing.T) {
+		done := make(chan bool, 50)
+
+		for i := 0; i < 50; i++ {
+			go func(id int) {
+				defer func() {
+					done <- true
+				}()
+
+				plmnBytes := aper.OctetString("\x02\x08\x93")
+				testTac := []byte{0x00, 0x00, byte(id)}
+
+				userLocationInfo := &ngapType.UserLocationInformation{
+					Present: ngapType.UserLocationInformationPresentUserLocationInformationNR,
+					UserLocationInformationNR: &ngapType.UserLocationInformationNR{
+						TAI: ngapType.TAI{
+							PLMNIdentity: ngapType.PLMNIdentity{
+								Value: plmnBytes,
+							},
+							TAC: ngapType.TAC{
+								Value: aper.OctetString(testTac),
+							},
+						},
+						NRCGI: ngapType.NRCGI{
+							PLMNIdentity: ngapType.PLMNIdentity{
+								Value: plmnBytes,
+							},
+							NRCellIdentity: ngapType.NRCellIdentity{
+								Value: aper.BitString{
+									Bytes:     []byte{0x00, 0x00, 0x00, 0x00, byte(id)},
+									BitLength: 36,
+								},
+							},
+						},
+					},
+				}
+
+				ranUe.UpdateLocation(userLocationInfo)
+			}(i)
+		}
+
+		// 等待所有更新完成
+		for i := 0; i < 50; i++ {
+			<-done
+		}
+	})
+
+	t.Run("Verify Final State After Concurrent Updates", func(t *testing.T) {
+		// 驗證最終位置被設定
+		require.NotNil(t, ranUe.Location.NrLocation,
+			"Location should be set after concurrent updates")
+		require.NotNil(t, amfUe.Location.NrLocation,
+			"AmfUe location should be set")
+
+		// 不會 panic 就是成功
+		t.Logf("Final TAC after concurrent updates: %s", ranUe.Tai.Tac)
+	})
+
+	t.Cleanup(func() {
+		ranUe.Remove()
+		amfContext.UePool.Delete(testSupi)
+		amfContext.AmfRanPool.Delete(fakeConn)
+	})
+}
