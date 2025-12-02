@@ -9,12 +9,11 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	amf_context "github.com/free5gc/amf/internal/context"
-	"github.com/free5gc/amf/internal/sbi/processor"
 	"github.com/free5gc/openapi/models"
 	"github.com/free5gc/util/fsm"
 )
 
-// setupTestRouterOAM initializes a Gin engine with OAM routes for testing.
+// Helper: Initialize Gin engine with OAM routes.
 func setupTestRouterOAM(s *Server) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -26,7 +25,7 @@ func setupTestRouterOAM(s *Server) *gin.Engine {
 	return r
 }
 
-// TestOAMRoutes_Definitions verifies correct route table definitions for OAM.
+// Verify OAM route definitions (Method, Pattern, Name).
 func TestOAMRoutes_Definitions(t *testing.T) {
 	s := &Server{}
 	routes := s.getOAMRoutes()
@@ -67,22 +66,20 @@ func TestOAMRoutes_Definitions(t *testing.T) {
 	}
 }
 
-// TestHTTPRegisteredUEContext_GlobalInjection tests the OAM handler using global state injection.
-// It verifies both the data retrieval and the presence of CORS headers.
+// Test OAM handler using global state injection (CORS and Data verification).
 func TestHTTPRegisteredUEContext_GlobalInjection(t *testing.T) {
-	// --- A. Global State Setup ---
-	self := amf_context.GetSelf()
+	// 1. Setup environment
+	s, _ := NewTestServer(t)
+	router := setupTestRouterOAM(s)
 
+	// 2. Prepare UE data (State and TAI are required to prevent panics)
 	targetSupi := "imsi-208930000000004"
 	fakeUe := &amf_context.AmfUe{
 		Supi: targetSupi,
-		// Initialize the FSM State for BOTH access types to prevent panic.
-		// The processor iterates or checks both 3GPP and Non-3GPP access types.
 		State: map[models.AccessType]*fsm.State{
 			models.AccessType__3_GPP_ACCESS:    fsm.NewState(amf_context.Registered),
 			models.AccessType_NON_3_GPP_ACCESS: fsm.NewState(amf_context.Deregistered),
 		},
-		// Initialize TAI and PlmnId to prevent panic when processor accesses ue.Tai.PlmnId.Mcc
 		Tai: models.Tai{
 			PlmnId: &models.PlmnId{
 				Mcc: "466",
@@ -91,61 +88,43 @@ func TestHTTPRegisteredUEContext_GlobalInjection(t *testing.T) {
 			Tac: "000001",
 		},
 	}
+
+	// 3. Inject into global pool and ensure cleanup
+	self := amf_context.GetSelf()
 	self.UePool.Store(targetSupi, fakeUe)
 
-	// --- B. Mock Setup ---
-	// Reuse MockProcessorAmf and MockServerAmf defined in server_test.go
-	dummyCtx := &amf_context.AMFContext{}
-	mockProcAmf := &MockProcessorAmf{fakeContext: dummyCtx}
+	t.Cleanup(func() {
+		self.UePool.Delete(targetSupi)
+	})
 
-	realProc, err := processor.NewProcessor(mockProcAmf)
-	if err != nil {
-		t.Fatalf("Failed to create real processor: %v", err)
-	}
-
-	mockServerAmf := &MockServerAmf{realProcessor: realProc}
-	s := &Server{ServerAmf: mockServerAmf}
-
-	router := setupTestRouterOAM(s)
-
-	// --- C. Test Case 1: Get Specific UE (verify CORS + Data) ---
+	// 4. Test: Get Specific UE
 	t.Run("Get Specific UE Context", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/registered-ue-context/"+targetSupi, nil)
 		w := httptest.NewRecorder()
 
 		router.ServeHTTP(w, req)
 
-		// Verification 1: CORS Headers
+		// Verify CORS headers
 		assert.Equal(t, "*", w.Header().Get("Access-Control-Allow-Origin"))
 		assert.Equal(t, "true", w.Header().Get("Access-Control-Allow-Credentials"))
 		assert.Contains(t, w.Header().Get("Access-Control-Allow-Methods"), "GET")
 
-		// Verification 2: Status and Body
-		if w.Code == http.StatusNotFound {
-			t.Log("Note: Got 404. Processor might check for specific UE state.")
-		} else {
-			assert.Equal(t, http.StatusOK, w.Code)
-			assert.Contains(t, w.Body.String(), targetSupi)
-		}
+		// Verify Data
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Contains(t, w.Body.String(), targetSupi)
+		assert.Contains(t, w.Body.String(), "466")
 	})
 
-	// --- D. Test Case 2: List All UEs (verify CORS + Data) ---
+	// 5. Test: List All UEs
 	t.Run("List All UE Contexts", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/registered-ue-context", nil)
 		w := httptest.NewRecorder()
 
 		router.ServeHTTP(w, req)
 
-		// Verification 1: CORS Headers
+		// Verify CORS and Data
 		assert.Equal(t, "*", w.Header().Get("Access-Control-Allow-Origin"))
-
-		// Verification 2: Status and Body
 		assert.Equal(t, http.StatusOK, w.Code)
-		if w.Body.Len() > 0 {
-			assert.Contains(t, w.Body.String(), targetSupi)
-		}
+		assert.Contains(t, w.Body.String(), targetSupi)
 	})
-
-	// --- E. Teardown ---
-	self.UePool.Delete(targetSupi)
 }

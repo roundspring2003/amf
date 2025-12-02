@@ -10,10 +10,10 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	amf_context "github.com/free5gc/amf/internal/context"
-	"github.com/free5gc/amf/internal/sbi/processor"
+	"github.com/free5gc/openapi/models"
 )
 
-// setupTestRouterMT initializes a Gin engine with MT routes for testing.
+// Helper: Initialize Gin engine with MT routes.
 func setupTestRouterMT(s *Server) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -25,52 +25,54 @@ func setupTestRouterMT(s *Server) *gin.Engine {
 	return r
 }
 
-// TestHTTPProvideDomainSelectionInfo_GlobalInjection tests the handler by injecting state into the global context.
+// Test handler with global state injection.
 func TestHTTPProvideDomainSelectionInfo_GlobalInjection(t *testing.T) {
-	// --- A. Global State Setup ---
-	self := amf_context.GetSelf()
-
-	targetSupi := "imsi-208930000000003"
-	fakeUe := &amf_context.AmfUe{
-		Supi: targetSupi,
-	}
-	self.UePool.Store(targetSupi, fakeUe)
-
-	// --- B. Mock Setup ---
-	dummyCtx := &amf_context.AMFContext{}
-	mockProcAmf := &MockProcessorAmf{fakeContext: dummyCtx}
-
-	realProc, err := processor.NewProcessor(mockProcAmf)
-	if err != nil {
-		t.Fatalf("Failed to create real processor: %v", err)
-	}
-
-	mockServerAmf := &MockServerAmf{realProcessor: realProc}
-	s := &Server{ServerAmf: mockServerAmf}
-
-	// --- C. Execute Test ---
+	// 1. Setup environment
+	s, _ := NewTestServer(t)
 	router := setupTestRouterMT(s)
 
-	req := httptest.NewRequest(http.MethodGet, "/ue-contexts/"+targetSupi, nil)
+	// 2. Prepare UE data (RanUe is required for JSON construction)
+	self := amf_context.GetSelf()
+	targetSupi := "imsi-208930000000003"
+
+	fakeUe := &amf_context.AmfUe{
+		Supi: targetSupi,
+		RanUe: map[models.AccessType]*amf_context.RanUe{
+			models.AccessType__3_GPP_ACCESS: {
+				SupportedFeatures: "00",
+				SupportVoPS:       true, // Simulate VoPS support
+			},
+		},
+	}
+	fakeUe.RatType = models.RatType_NR // Set RatType to 5G
+
+	// 3. Inject into global pool and ensure cleanup
+	self.UePool.Store(targetSupi, fakeUe)
+
+	t.Cleanup(func() {
+		self.UePool.Delete(targetSupi)
+	})
+
+	// 4. Execute Test (Include query params for full logic coverage)
+	req := httptest.NewRequest(http.MethodGet,
+		"/ue-contexts/"+targetSupi+"?info-class=TADS&supported-features=00", nil)
 	w := httptest.NewRecorder()
 
 	router.ServeHTTP(w, req)
 
-	// --- D. Verification ---
-	if w.Code == http.StatusNotFound {
-		t.Log("Note: Still got 404. Check if fakeUe needs more fields.")
-	} else {
-		assert.Equal(t, http.StatusOK, w.Code)
-		var respBody map[string]interface{}
-		err := json.Unmarshal(w.Body.Bytes(), &respBody)
-		assert.NoError(t, err)
-	}
+	// 5. Verification
+	assert.Equal(t, http.StatusOK, w.Code, "Expected 200 OK")
 
-	// --- E. Teardown ---
-	self.UePool.Delete(targetSupi)
+	var respBody map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &respBody)
+	assert.NoError(t, err)
+
+	// Verify response content matches injected data
+	assert.Equal(t, string(models.RatType_NR), respBody["ratType"])
+	assert.Equal(t, true, respBody["supportVoPS"])
 }
 
-// TestMTRoutes_Definitions verifies correct route table definitions for MT.
+// Verify MT route definitions (Method, Pattern, Name).
 func TestMTRoutes_Definitions(t *testing.T) {
 	s := &Server{}
 	routes := s.getMTRoutes()
@@ -107,6 +109,7 @@ func TestMTRoutes_Definitions(t *testing.T) {
 	}
 }
 
+// Test handlers using table-driven tests.
 func TestMTRoutes_Handlers(t *testing.T) {
 	s := &Server{}
 	router := setupTestRouterMT(s)
