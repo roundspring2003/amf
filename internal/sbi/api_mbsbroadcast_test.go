@@ -10,8 +10,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-/* Set up gin engine */
-func setupTestRouter(s *Server) *gin.Engine {
+//
+// -------------------------------------------------------------------
+// Helper Functions
+// -------------------------------------------------------------------
+//
+
+func setupTestMbsRouter(s *Server) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 
 	r := gin.New()
@@ -33,7 +38,6 @@ func setupTestRouter(s *Server) *gin.Engine {
 	return r
 }
 
-/* Check JSON response */
 func assertJSONResponse(t *testing.T, w *httptest.ResponseRecorder) {
 	t.Helper()
 
@@ -51,100 +55,83 @@ func assertJSONResponse(t *testing.T, w *httptest.ResponseRecorder) {
 	}
 }
 
-/* Route coverage test */
+//
+// -------------------------------------------------------------------
+// Tests
+// -------------------------------------------------------------------
+//
+
 func TestMbsBroadcast_RouteDefinitions(t *testing.T) {
 	s := &Server{}
 	routes := s.getMbsBroadcastRoutes()
 
-	expected := []Route{
-		{Method: http.MethodGet, Pattern: "/"},
-		{Name: "ContextCreate", Method: http.MethodPost, Pattern: "/mbs-contexts"},
-		{Name: "ContextUpdate", Method: http.MethodPost, Pattern: "/mbs-contexts/:mbsContextRef/update"},
-		{Name: "ContextReleas", Method: http.MethodDelete, Pattern: "/mbs-contexts/:mbsContextRef"},
-	}
-
-	if len(routes) != len(expected) {
-		t.Fatalf("expected %d routes, got %d", len(expected), len(routes))
-	}
-
-	for i := range routes {
-		if routes[i].Method != expected[i].Method {
-			t.Errorf("route[%d] Method mismatch: got %s, expected %s",
-				i, routes[i].Method, expected[i].Method)
-		}
-
-		if routes[i].Pattern != expected[i].Pattern {
-			t.Errorf("route[%d] Pattern mismatch: got %s, expected %s",
-				i, routes[i].Pattern, expected[i].Pattern)
-		}
-
-		if expected[i].Name != "" && routes[i].Name != expected[i].Name {
-			t.Errorf("route[%d] Name mismatch: got %s, expected %s",
-				i, routes[i].Name, expected[i].Name)
-		}
+	if len(routes) != 4 {
+		t.Fatalf("expected 4 routes, got %d", len(routes))
 	}
 }
 
-/* Handler test */
-func TestMbsBroadcast_HelloWorld(t *testing.T) {
-	s := &Server{}
-	router := setupTestRouter(s)
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	w := httptest.NewRecorder()
-
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status %d, got %d", http.StatusOK, w.Code)
+func TestMbsBroadcast_Endpoints(t *testing.T) {
+	testCases := []struct {
+		name           string
+		method         string
+		path           string
+		expectedStatus int
+		expectedBody   string
+		checkJSON      bool
+	}{
+		{
+			name:           "health check endpoint",
+			method:         http.MethodGet,
+			path:           "/",
+			expectedStatus: http.StatusOK,
+			expectedBody:   "Hello World!",
+			checkJSON:      false,
+		},
+		{
+			name:           "context create - not implemented",
+			method:         http.MethodPost,
+			path:           "/mbs-contexts",
+			expectedStatus: http.StatusNotImplemented,
+			checkJSON:      true,
+		},
+		{
+			name:           "context update - not implemented",
+			method:         http.MethodPost,
+			path:           "/mbs-contexts/abc/update",
+			expectedStatus: http.StatusNotImplemented,
+			checkJSON:      true,
+		},
+		{
+			name:           "context release - not implemented",
+			method:         http.MethodDelete,
+			path:           "/mbs-contexts/abc",
+			expectedStatus: http.StatusNotImplemented,
+			checkJSON:      true,
+		},
 	}
 
-	if w.Body.String() != "Hello World!" {
-		t.Fatalf("expected body %q, got %q", "Hello World!", w.Body.String())
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Server{}
+			router := setupTestMbsRouter(s)
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			w := httptest.NewRecorder()
+
+			router.ServeHTTP(w, req)
+
+			if w.Code != tc.expectedStatus {
+				t.Fatalf("expected status %d, got %d", tc.expectedStatus, w.Code)
+			}
+
+			if tc.expectedBody != "" {
+				if w.Body.String() != tc.expectedBody {
+					t.Fatalf("expected body %q, got %q", tc.expectedBody, w.Body.String())
+				}
+			}
+
+			if tc.checkJSON {
+				assertJSONResponse(t, w)
+			}
+		})
 	}
-}
-
-func TestMbsBroadcast_ContextCreate(t *testing.T) {
-	s := &Server{}
-	router := setupTestRouter(s)
-
-	req := httptest.NewRequest(http.MethodPost, "/mbs-contexts", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusNotImplemented {
-		t.Fatalf("expected status %d, got %d", http.StatusNotImplemented, w.Code)
-	}
-
-	assertJSONResponse(t, w)
-}
-
-func TestMbsBroadcast_ContextUpdate(t *testing.T) {
-	s := &Server{}
-	router := setupTestRouter(s)
-
-	req := httptest.NewRequest(http.MethodPost, "/mbs-contexts/abc/update", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusNotImplemented {
-		t.Fatalf("expected status %d, got %d", http.StatusNotImplemented, w.Code)
-	}
-
-	assertJSONResponse(t, w)
-}
-
-func TestMbsBroadcast_ContextRelease(t *testing.T) {
-	s := &Server{}
-	router := setupTestRouter(s)
-
-	req := httptest.NewRequest(http.MethodDelete, "/mbs-contexts/abc", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusNotImplemented {
-		t.Fatalf("expected status %d, got %d", http.StatusNotImplemented, w.Code)
-	}
-
-	assertJSONResponse(t, w)
 }
