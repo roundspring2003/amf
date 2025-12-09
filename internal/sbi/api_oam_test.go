@@ -2,7 +2,6 @@ package sbi
 
 import (
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -27,6 +26,7 @@ func setupTestRouterOAM(s *Server) *gin.Engine {
 
 // Verify OAM route definitions (Method, Pattern, Name).
 func TestOAMRoutes_Definitions(t *testing.T) {
+	// Arrange
 	s := &Server{}
 	routes := s.getOAMRoutes()
 
@@ -47,6 +47,7 @@ func TestOAMRoutes_Definitions(t *testing.T) {
 		},
 	}
 
+	// Assert
 	if len(routes) != len(expected) {
 		t.Fatalf("expected %d routes, got %d", len(expected), len(routes))
 	}
@@ -68,11 +69,10 @@ func TestOAMRoutes_Definitions(t *testing.T) {
 
 // Test OAM handler using global state injection (CORS and Data verification).
 func TestHTTPRegisteredUEContext_GlobalInjection(t *testing.T) {
-	// 1. Setup environment
+	// Arrange: Setup environment and Prepare Data
 	s, _ := NewTestServer(t)
 	router := setupTestRouterOAM(s)
 
-	// 2. Prepare UE data (State and TAI are required to prevent panics)
 	targetSupi := "imsi-208930000000004"
 	fakeUe := &amf_context.AmfUe{
 		Supi: targetSupi,
@@ -89,27 +89,19 @@ func TestHTTPRegisteredUEContext_GlobalInjection(t *testing.T) {
 		},
 	}
 
-	// 3. Inject into global pool and ensure cleanup
-	self := amf_context.GetSelf()
-	self.UePool.Store(targetSupi, fakeUe)
-
-	t.Cleanup(func() {
-		self.UePool.Delete(targetSupi)
-	})
+	ManageTestUE(t, fakeUe)
 
 	// 4. Test: Get Specific UE
 	t.Run("Get Specific UE Context", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/registered-ue-context/"+targetSupi, nil)
-		w := httptest.NewRecorder()
+		// Act
+		w := PerformJSONRequest(router, http.MethodGet, "/registered-ue-context/"+targetSupi, "")
 
-		router.ServeHTTP(w, req)
-
-		// Verify CORS headers
+		// Assert: Verify CORS headers
 		assert.Equal(t, "*", w.Header().Get("Access-Control-Allow-Origin"))
 		assert.Equal(t, "true", w.Header().Get("Access-Control-Allow-Credentials"))
 		assert.Contains(t, w.Header().Get("Access-Control-Allow-Methods"), "GET")
 
-		// Verify Data
+		// Assert: Verify Data
 		assert.Equal(t, http.StatusOK, w.Code)
 		assert.Contains(t, w.Body.String(), targetSupi)
 		assert.Contains(t, w.Body.String(), "466")
@@ -117,12 +109,10 @@ func TestHTTPRegisteredUEContext_GlobalInjection(t *testing.T) {
 
 	// 5. Test: List All UEs
 	t.Run("List All UE Contexts", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/registered-ue-context", nil)
-		w := httptest.NewRecorder()
+		// Act
+		w := PerformJSONRequest(router, http.MethodGet, "/registered-ue-context", "")
 
-		router.ServeHTTP(w, req)
-
-		// Verify CORS and Data
+		// Assert: Verify CORS and Data
 		assert.Equal(t, "*", w.Header().Get("Access-Control-Allow-Origin"))
 		assert.Equal(t, http.StatusOK, w.Code)
 		assert.Contains(t, w.Body.String(), targetSupi)

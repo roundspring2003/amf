@@ -27,7 +27,6 @@ func setupTestRouterMbsCommunication(s *Server) *gin.Engine {
 	return r
 }
 
-
 func assertJSONResponseMbsCommunication(t *testing.T, w *httptest.ResponseRecorder) {
 	t.Helper()
 	if !strings.Contains(w.Header().Get("Content-Type"), "application/json") {
@@ -42,26 +41,39 @@ func assertJSONResponseMbsCommunication(t *testing.T, w *httptest.ResponseRecord
 	}
 }
 
-// 測試路由
+// 測試路由定義 (使用標準化 Map 檢查)
 func TestMbsCommunication_RouteDefinitions(t *testing.T) {
 	s := &Server{}
 	routes := s.getMbsCommunicationRoutes()
-	expected := []Route{
-		{Method: http.MethodGet, Pattern: "/"},
-		{Name: "N2MessageTransfer", Method: http.MethodPost, Pattern: "/n2-messages/transfer"},
+
+	expected := map[string]struct {
+		Method string
+		Name   string
+	}{
+		"/": {
+			Method: http.MethodGet,
+		},
+		"/n2-messages/transfer": {
+			Method: http.MethodPost,
+			Name:   "N2MessageTransfer",
+		},
 	}
+
 	if len(routes) != len(expected) {
 		t.Fatalf("expected %d routes, got %d", len(expected), len(routes))
 	}
-	for i := range routes {
-		if routes[i].Method != expected[i].Method {
-			t.Errorf("route[%d] Method mismatch: got %s, expected %s", i, routes[i].Method, expected[i].Method)
+
+	for _, r := range routes {
+		exp, exists := expected[r.Pattern]
+		if !exists {
+			t.Errorf("Unexpected route pattern: %s", r.Pattern)
+			continue
 		}
-		if routes[i].Pattern != expected[i].Pattern {
-			t.Errorf("route[%d] Pattern mismatch: got %s, expected %s", i, routes[i].Pattern, expected[i].Pattern)
+		if r.Method != exp.Method {
+			t.Errorf("Pattern %s: Method mismatch. Got %s, Want %s", r.Pattern, r.Method, exp.Method)
 		}
-		if expected[i].Name != "" && routes[i].Name != expected[i].Name {
-			t.Errorf("route[%d] Name mismatch: got %s, expected %s", i, routes[i].Name, expected[i].Name)
+		if exp.Name != "" && r.Name != exp.Name {
+			t.Errorf("Pattern %s: Name mismatch. Got %s, Want %s", r.Pattern, r.Name, exp.Name)
 		}
 	}
 }
@@ -70,9 +82,8 @@ func TestMbsCommunication_HelloWorld(t *testing.T) {
 	s := &Server{}
 	router := setupTestRouterMbsCommunication(s)
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	// 使用 Helper
+	w := PerformJSONRequest(router, http.MethodGet, "/", "")
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, w.Code)
@@ -87,9 +98,8 @@ func TestMbsCommunication_N2MessageTransfer(t *testing.T) {
 	s := &Server{}
 	router := setupTestRouterMbsCommunication(s)
 
-	req := httptest.NewRequest(http.MethodPost, "/n2-messages/transfer", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	// 使用 Helper
+	w := PerformJSONRequest(router, http.MethodPost, "/n2-messages/transfer", "")
 
 	if w.Code != http.StatusNotImplemented {
 		t.Fatalf("expected status %d, got %d", http.StatusNotImplemented, w.Code)

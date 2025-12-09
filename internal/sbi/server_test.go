@@ -1,7 +1,10 @@
 package sbi
 
 import (
+	"bytes"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -134,4 +137,33 @@ func NewTestServer(t *testing.T) (*Server, *amf_context.AMFContext) {
 	}
 
 	return s, ctx
+}
+
+// ==========================================
+// 4. Common Test Helpers
+// ==========================================
+
+// ManageTestUE registers a UE into the global AMF context for the duration of a test.
+// It automatically handles cleanup.
+func ManageTestUE(t *testing.T, ue *amf_context.AmfUe) {
+	self := amf_context.GetSelf()
+	self.UePool.Store(ue.Supi, ue)
+
+	t.Cleanup(func() {
+		self.UePool.Delete(ue.Supi)
+	})
+}
+
+// PerformJSONRequest performs a JSON HTTP request and returns the recorder.
+func PerformJSONRequest(router *gin.Engine, method, url, body string) *httptest.ResponseRecorder {
+	var req *http.Request
+	if body != "" {
+		req = httptest.NewRequest(method, url, bytes.NewBufferString(body))
+	} else {
+		req = httptest.NewRequest(method, url, nil)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	return w
 }

@@ -46,6 +46,7 @@ func setupTestRouterCallback(s *Server) *gin.Engine {
 
 // Verify Callback route definitions.
 func TestCallbackRoutes_Definitions(t *testing.T) {
+	// Arrange
 	s, _ := NewTestServer(t)
 	routes := s.getHttpCallBackRoutes()
 
@@ -78,6 +79,7 @@ func TestCallbackRoutes_Definitions(t *testing.T) {
 		},
 	}
 
+	// Assert
 	assert.Equal(t, len(expected), len(routes), "Route count mismatch")
 
 	for _, r := range routes {
@@ -93,65 +95,56 @@ func TestCallbackRoutes_Definitions(t *testing.T) {
 	}
 }
 
-// Test JSON validation logic for Policy Update.
+// Test JSON validation logic using Table-Driven Tests for Policy Update.
 func TestHTTPAmPolicyControlUpdateNotifyUpdate_Validation(t *testing.T) {
+	// Arrange
 	s, _ := NewTestServer(t)
 	router := setupTestRouterCallback(s)
 	url := "/am-policy/test-pol-id/update"
 
-	// Case 1: Malformed JSON
-	t.Run("Malformed JSON", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, url, bytes.NewBufferString(`{ "invalid": `))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
+	tests := []struct {
+		name         string
+		body         string
+		expectedCode int
+		bodyContains string
+	}{
+		{
+			name:         "Malformed JSON",
+			body:         `{ "invalid": `,
+			expectedCode: http.StatusBadRequest,
+			bodyContains: "Malformed request syntax",
+		},
+		{
+			name:         "Valid JSON structure",
+			body:         `{}`,
+			expectedCode: http.StatusNotFound, // Changed expectation because "test-pol-id" won't be found
+			bodyContains: "CONTEXT_NOT_FOUND",
+		},
+	}
 
-		router.ServeHTTP(w, req)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Act
+			w := PerformJSONRequest(router, http.MethodPost, url, tc.body)
 
-		assert.Equal(t, http.StatusBadRequest, w.Code)
-		assert.Contains(t, w.Body.String(), "Malformed request syntax")
-	})
-
-	// Case 2: Valid JSON structure
-	t.Run("Valid JSON structure", func(t *testing.T) {
-		validJSON := `{}`
-		req := httptest.NewRequest(http.MethodPost, url, bytes.NewBufferString(validJSON))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-
-		router.ServeHTTP(w, req)
-
-		// 400 Bad Request is only expected for Malformed JSON.
-		// If received here, ensure it is NOT "Malformed request syntax".
-		if w.Code == http.StatusBadRequest {
-			assert.NotContains(t, w.Body.String(), "Malformed request syntax")
-		}
-	})
+			// Assert
+			assert.Equal(t, tc.expectedCode, w.Code)
+			if tc.bodyContains != "" {
+				assert.Contains(t, w.Body.String(), tc.bodyContains)
+			}
+		})
+	}
 }
 
 // Test full logic for Policy Update with global state injection.
 func TestHTTPAmPolicyControlUpdateNotifyUpdate_Procedure(t *testing.T) {
-	// 1. Setup Environment
+	// Arrange: Setup Environment
 	s, _ := NewTestServer(t)
 	router := setupTestRouterCallback(s)
-	self := amf_context.GetSelf()
 
-	// 2. Case: Context Not Found (404)
-	t.Run("Context Not Found", func(t *testing.T) {
-		url := "/am-policy/unknown-policy-id/update"
-		body := `{}`
-		req := httptest.NewRequest(http.MethodPost, url, bytes.NewBufferString(body))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-
-		router.ServeHTTP(w, req)
-
-		assert.Equal(t, http.StatusNotFound, w.Code)
-		assert.Contains(t, w.Body.String(), "CONTEXT_NOT_FOUND")
-	})
-
-	// 3. Case: Success Update (204)
+	// 2. Case: Success Update (204)
 	t.Run("Success Update and Verify Context", func(t *testing.T) {
-		// A. Inject Fake UE
+		// Arrange: Inject Fake UE
 		targetPolAssoId := "pol-12345"
 		targetSupi := "imsi-208930000000001"
 
@@ -170,32 +163,24 @@ func TestHTTPAmPolicyControlUpdateNotifyUpdate_Procedure(t *testing.T) {
 				Tac:    "000001",
 			},
 		}
-		self.UePool.Store(targetSupi, fakeUe)
 
-		// Ensure cleanup
-		t.Cleanup(func() {
-			self.UePool.Delete(targetSupi)
-		})
+		ManageTestUE(t, fakeUe) // Use Helper
 
-		// B. Prepare Request Data (Update RFSP and Triggers)
+		// Arrange: Prepare Request Data
 		jsonBody := `{
 			"rfsp": 10,
 			"triggers": ["LOC_CH"]
 		}`
 		url := "/am-policy/" + targetPolAssoId + "/update"
-		req := httptest.NewRequest(http.MethodPost, url, bytes.NewBufferString(jsonBody))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
 
-		// C. Execute
-		router.ServeHTTP(w, req)
+		// Act: Execute Request
+		w := PerformJSONRequest(router, http.MethodPost, url, jsonBody)
 
-		// D. Verify Response
+		// Assert: Verify Response
 		assert.Equal(t, http.StatusNoContent, w.Code)
 
-		// E. Verify Side Effects (Global state update)
+		// Assert: Verify Side Effects (Global state update)
 		assert.Equal(t, int32(10), fakeUe.AmPolicyAssociation.Rfsp, "UE RFSP should be updated to 10")
-		// Note: Verify specific boolean field if needed (e.g., RequestTriggerLocationChange)
 	})
 }
 
@@ -205,27 +190,14 @@ func TestHTTPAmPolicyControlUpdateNotifyTerminate_Validation(t *testing.T) {
 	router := setupTestRouterCallback(s)
 	url := "/am-policy/test-pol-id/terminate"
 
-	// Case 1: Malformed JSON
 	t.Run("Malformed JSON", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, url, bytes.NewBufferString(`{ "cause": `))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-
-		router.ServeHTTP(w, req)
-
+		w := PerformJSONRequest(router, http.MethodPost, url, `{ "cause": `)
 		assert.Equal(t, http.StatusBadRequest, w.Code)
 		assert.Contains(t, w.Body.String(), "Malformed request syntax")
 	})
 
-	// Case 2: Valid JSON structure
 	t.Run("Valid JSON structure", func(t *testing.T) {
-		validJSON := `{ "cause": "UNSPECIFIED" }`
-		req := httptest.NewRequest(http.MethodPost, url, bytes.NewBufferString(validJSON))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-
-		router.ServeHTTP(w, req)
-
+		w := PerformJSONRequest(router, http.MethodPost, url, `{ "cause": "UNSPECIFIED" }`)
 		if w.Code == http.StatusBadRequest {
 			assert.Fail(t, "Should not return 400 for valid JSON")
 		}
@@ -237,17 +209,12 @@ func TestHTTPAmPolicyControlUpdateNotifyTerminate_Procedure(t *testing.T) {
 	// 1. Setup
 	s, _ := NewTestServer(t)
 	router := setupTestRouterCallback(s)
-	self := amf_context.GetSelf()
 
 	// 2. Case: Context Not Found (404)
 	t.Run("Context Not Found", func(t *testing.T) {
 		url := "/am-policy/unknown-pol-id/terminate"
 		body := `{ "cause": "UNSPECIFIED" }`
-		req := httptest.NewRequest(http.MethodPost, url, bytes.NewBufferString(body))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-
-		router.ServeHTTP(w, req)
+		w := PerformJSONRequest(router, http.MethodPost, url, body)
 
 		assert.Equal(t, http.StatusNotFound, w.Code)
 		assert.Contains(t, w.Body.String(), "CONTEXT_NOT_FOUND")
@@ -264,23 +231,14 @@ func TestHTTPAmPolicyControlUpdateNotifyTerminate_Procedure(t *testing.T) {
 			PolicyAssociationId: targetPolAssoId,
 			AmPolicyAssociation: &models.PcfAmPolicyControlPolicyAssociation{},
 		}
-		self.UePool.Store(targetSupi, fakeUe)
+		ManageTestUE(t, fakeUe) // Use Helper
 
-		t.Cleanup(func() {
-			self.UePool.Delete(targetSupi)
-		})
-
-		// B. Prepare Request
+		// B. Perform Helper Request
 		url := "/am-policy/" + targetPolAssoId + "/terminate"
 		body := `{ "cause": "UE_SUBSCRIPTION_DELETED" }`
-		req := httptest.NewRequest(http.MethodPost, url, bytes.NewBufferString(body))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
+		w := PerformJSONRequest(router, http.MethodPost, url, body)
 
-		// C. Execute
-		router.ServeHTTP(w, req)
-
-		// D. Verify
+		// C. Verify
 		assert.Equal(t, http.StatusNoContent, w.Code)
 	})
 }
@@ -291,14 +249,8 @@ func TestHTTPSmContextStatusNotify_Validation(t *testing.T) {
 	router := setupTestRouterCallback(s)
 	url := "/smContextStatus/imsi-12345/10"
 
-	// Case 1: Malformed JSON
 	t.Run("Malformed JSON", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, url, bytes.NewBufferString(`{ "invalid": `))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-
-		router.ServeHTTP(w, req)
-
+		w := PerformJSONRequest(router, http.MethodPost, url, `{ "invalid": `)
 		assert.Equal(t, http.StatusBadRequest, w.Code)
 		assert.Contains(t, w.Body.String(), "Malformed request syntax")
 	})
@@ -309,7 +261,6 @@ func TestHTTPSmContextStatusNotify_Procedure(t *testing.T) {
 	// 1. Setup
 	s, _ := NewTestServer(t)
 	router := setupTestRouterCallback(s)
-	self := amf_context.GetSelf()
 
 	// 2. Case: UE Not Found (404)
 	t.Run("UE Not Found", func(t *testing.T) {
@@ -319,11 +270,7 @@ func TestHTTPSmContextStatusNotify_Procedure(t *testing.T) {
 				"resourceStatus": "RELEASED"
 			}
 		}`
-		req := httptest.NewRequest(http.MethodPost, url, bytes.NewBufferString(body))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-
-		router.ServeHTTP(w, req)
+		w := PerformJSONRequest(router, http.MethodPost, url, body)
 
 		assert.Equal(t, http.StatusNotFound, w.Code)
 		assert.Contains(t, w.Body.String(), "CONTEXT_NOT_FOUND")
@@ -336,8 +283,7 @@ func TestHTTPSmContextStatusNotify_Procedure(t *testing.T) {
 			Supi:        targetSupi,
 			ProducerLog: logger.ProducerLog, // Required to prevent nil pointer panic
 		}
-		self.UePool.Store(targetSupi, fakeUe)
-		t.Cleanup(func() { self.UePool.Delete(targetSupi) })
+		ManageTestUE(t, fakeUe) // Use Helper
 
 		url := "/smContextStatus/" + targetSupi + "/99"
 		body := `{
@@ -345,11 +291,7 @@ func TestHTTPSmContextStatusNotify_Procedure(t *testing.T) {
 				"resourceStatus": "RELEASED"
 			}
 		}`
-		req := httptest.NewRequest(http.MethodPost, url, bytes.NewBufferString(body))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-
-		router.ServeHTTP(w, req)
+		w := PerformJSONRequest(router, http.MethodPost, url, body)
 
 		assert.Equal(t, http.StatusNotFound, w.Code)
 		assert.Contains(t, w.Body.String(), "PDUSessionID[99] Not Found")
@@ -365,8 +307,7 @@ func TestHTTPSmContextStatusNotify_Procedure(t *testing.T) {
 		smContext := amf_context.NewSmContext(pduSessionID)
 		fakeUe.StoreSmContext(pduSessionID, smContext)
 
-		self.UePool.Store(targetSupi, fakeUe)
-		t.Cleanup(func() { self.UePool.Delete(targetSupi) })
+		ManageTestUE(t, fakeUe) // Use Helper
 
 		url := "/smContextStatus/" + targetSupi + "/5"
 		body := `{
@@ -374,11 +315,7 @@ func TestHTTPSmContextStatusNotify_Procedure(t *testing.T) {
 				"resourceStatus": "UPDATED" 
 			}
 		}`
-		req := httptest.NewRequest(http.MethodPost, url, bytes.NewBufferString(body))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-
-		router.ServeHTTP(w, req)
+		w := PerformJSONRequest(router, http.MethodPost, url, body)
 
 		assert.Equal(t, http.StatusBadRequest, w.Code)
 		assert.Contains(t, w.Body.String(), "INVALID_MSG_FORMAT")
@@ -397,8 +334,7 @@ func TestHTTPSmContextStatusNotify_Procedure(t *testing.T) {
 		smContext.SetAccessType(models.AccessType__3_GPP_ACCESS) // Required by DeleteSmContext
 		fakeUe.StoreSmContext(pduSessionID, smContext)
 
-		self.UePool.Store(targetSupi, fakeUe)
-		t.Cleanup(func() { self.UePool.Delete(targetSupi) })
+		ManageTestUE(t, fakeUe) // Use Helper
 
 		// Pre-check
 		_, existsBefore := fakeUe.SmContextFindByPDUSessionID(pduSessionID)
@@ -411,11 +347,7 @@ func TestHTTPSmContextStatusNotify_Procedure(t *testing.T) {
 				"cause": "REL_DUE_TO_DUPLICATE_SESSION_ID"
 			}
 		}`
-		req := httptest.NewRequest(http.MethodPost, url, bytes.NewBufferString(body))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-
-		router.ServeHTTP(w, req)
+		w := PerformJSONRequest(router, http.MethodPost, url, body)
 
 		// Verify Response
 		assert.Equal(t, http.StatusNoContent, w.Code)
@@ -439,11 +371,7 @@ func TestHTTPHandleDeregistrationNotification_Success(t *testing.T) {
 	fakeUe := &amf_context.AmfUe{
 		Supi: targetSupi,
 	}
-	self.UePool.Store(targetSupi, fakeUe)
-
-	t.Cleanup(func() {
-		self.UePool.Delete(targetSupi)
-	})
+	ManageTestUE(t, fakeUe) // Use Helper
 
 	// 3. Prepare Request
 	deregData := models.DeregistrationData{
@@ -452,12 +380,8 @@ func TestHTTPHandleDeregistrationNotification_Success(t *testing.T) {
 	}
 	bodyBytes, _ := json.Marshal(deregData)
 
-	req := httptest.NewRequest(http.MethodPost, "/deregistration/"+targetSupi, bytes.NewBuffer(bodyBytes))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	// 4. Execute
-	router.ServeHTTP(w, req)
+	// Using PerformJSONRequest here as well
+	w := PerformJSONRequest(router, http.MethodPost, "/deregistration/"+targetSupi, string(bodyBytes))
 
 	// 5. Verify
 	assert.Equal(t, http.StatusNoContent, w.Code)
@@ -475,12 +399,7 @@ func TestHTTPN1MessageNotify_Validation(t *testing.T) {
 
 	// Case 1: Malformed Body (Non-Multipart/Non-JSON)
 	t.Run("Malformed Body", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, url, bytes.NewBufferString(`{ invalid-json-structure `))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-
-		router.ServeHTTP(w, req)
-
+		w := PerformJSONRequest(router, http.MethodPost, url, `{ invalid-json-structure `)
 		assert.Equal(t, http.StatusBadRequest, w.Code)
 		assert.Contains(t, w.Body.String(), "Malformed request syntax")
 	})
@@ -525,7 +444,7 @@ func TestHTTPN1MessageNotify_Procedure(t *testing.T) {
 
 		writer.Close()
 
-		// 2. Create Request
+		// 2. Create Request (Multipart, cannot use PerformJSONRequest)
 		url := "/n1-message-notify"
 		req := httptest.NewRequest(http.MethodPost, url, body)
 		req.Header.Set("Content-Type", "multipart/related; boundary="+writer.Boundary())

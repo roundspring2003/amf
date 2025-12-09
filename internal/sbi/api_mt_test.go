@@ -3,7 +3,6 @@ package sbi
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -27,12 +26,11 @@ func setupTestRouterMT(s *Server) *gin.Engine {
 
 // Test handler with global state injection.
 func TestHTTPProvideDomainSelectionInfo_GlobalInjection(t *testing.T) {
-	// 1. Setup environment
+	// Arrange: Setup environment
 	s, _ := NewTestServer(t)
 	router := setupTestRouterMT(s)
 
-	// 2. Prepare UE data (RanUe is required for JSON construction)
-	self := amf_context.GetSelf()
+	// Arrange: Prepare UE data (RanUe is required for JSON construction)
 	targetSupi := "imsi-208930000000003"
 
 	fakeUe := &amf_context.AmfUe{
@@ -46,34 +44,27 @@ func TestHTTPProvideDomainSelectionInfo_GlobalInjection(t *testing.T) {
 	}
 	fakeUe.RatType = models.RatType_NR // Set RatType to 5G
 
-	// 3. Inject into global pool and ensure cleanup
-	self.UePool.Store(targetSupi, fakeUe)
+	ManageTestUE(t, fakeUe) // Use Helper
 
-	t.Cleanup(func() {
-		self.UePool.Delete(targetSupi)
-	})
+	// Act: Execute Test (Include query params for full logic coverage)
+	url := "/ue-contexts/" + targetSupi + "?info-class=TADS&supported-features=00"
+	w := PerformJSONRequest(router, http.MethodGet, url, "")
 
-	// 4. Execute Test (Include query params for full logic coverage)
-	req := httptest.NewRequest(http.MethodGet,
-		"/ue-contexts/"+targetSupi+"?info-class=TADS&supported-features=00", nil)
-	w := httptest.NewRecorder()
-
-	router.ServeHTTP(w, req)
-
-	// 5. Verification
+	// Assert: Verification
 	assert.Equal(t, http.StatusOK, w.Code, "Expected 200 OK")
 
 	var respBody map[string]interface{}
 	err := json.Unmarshal(w.Body.Bytes(), &respBody)
 	assert.NoError(t, err)
 
-	// Verify response content matches injected data
+	// Assert: Verify response content matches injected data
 	assert.Equal(t, string(models.RatType_NR), respBody["ratType"])
 	assert.Equal(t, true, respBody["supportVoPS"])
 }
 
 // Verify MT route definitions (Method, Pattern, Name).
 func TestMTRoutes_Definitions(t *testing.T) {
+	// Arrange
 	s := &Server{}
 	routes := s.getMTRoutes()
 
@@ -98,19 +89,25 @@ func TestMTRoutes_Definitions(t *testing.T) {
 		},
 	}
 
+	// Assert
 	assert.Equal(t, len(expected), len(routes))
+
 	for _, r := range routes {
 		exp, exists := expected[r.Pattern]
 		if !exists {
 			t.Errorf("Unexpected route pattern: %s", r.Pattern)
 			continue
 		}
-		assert.Equal(t, exp.Method, r.Method)
+		assert.Equal(t, exp.Method, r.Method, "Method mismatch for %s", r.Pattern)
+		if exp.Name != "" {
+			assert.Equal(t, exp.Name, r.Name, "Name mismatch for %s", r.Pattern)
+		}
 	}
 }
 
 // Test handlers using table-driven tests.
 func TestMTRoutes_Handlers(t *testing.T) {
+	// Arrange
 	s := &Server{}
 	router := setupTestRouterMT(s)
 
@@ -136,9 +133,10 @@ func TestMTRoutes_Handlers(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(tt.method, tt.url, nil)
-			w := httptest.NewRecorder()
-			router.ServeHTTP(w, req)
+			// Act
+			w := PerformJSONRequest(router, tt.method, tt.url, "")
+
+			// Assert
 			assert.Equal(t, tt.expectedStatus, w.Code)
 		})
 	}
