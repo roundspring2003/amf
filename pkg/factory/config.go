@@ -13,37 +13,39 @@ import (
 
 	"github.com/asaskevich/govalidator"
 	"github.com/davecgh/go-spew/spew"
+	"github.com/google/uuid"
 
 	"github.com/free5gc/amf/internal/logger"
 	"github.com/free5gc/openapi/models"
 )
 
 const (
-	AmfDefaultTLSKeyLogPath    = "./log/amfsslkey.log"
-	AmfDefaultCertPemPath      = "./cert/amf.pem"
-	AmfDefaultPrivateKeyPath   = "./cert/amf.key"
-	AmfDefaultConfigPath       = "./config/amfcfg.yaml"
-	AmfSbiDefaultIPv4          = "127.0.0.18"
-	AmfSbiDefaultPort          = 8000
-	AmfSbiDefaultScheme        = "https"
-	AmfMetricsDefaultEnabled   = false
-	AmfMetricsDefaultPort      = 9091
-	AmfMetricsDefaultScheme    = "https"
-	AmfMetricsDefaultNamespace = "free5gc"
-	AmfDefaultNrfUri           = "https://127.0.0.10:8000"
-	sctpDefaultNumOstreams     = 3
-	sctpDefaultMaxInstreams    = 5
-	sctpDefaultMaxAttempts     = 2
-	sctpDefaultMaxInitTimeout  = 2
-	ngapDefaultPort            = 38412
-	AmfCallbackResUriPrefix    = "/namf-callback/v1"
-	AmfCommResUriPrefix        = "/namf-comm/v1"
-	AmfEvtsResUriPrefix        = "/namf-evts/v1"
-	AmfLocResUriPrefix         = "/namf-loc/v1"
-	AmfMtResUriPrefix          = "/namf-mt/v1"
-	AmfOamResUriPrefix         = "/namf-oam/v1"
-	AmfMbsComResUriPrefix      = "/namf-mbs-comm/v1"
-	AmfMbsBCResUriPrefix       = "/namf-mbs-bc/v1"
+	AmfDefaultTLSKeyLogPath      = "./log/amfsslkey.log"
+	AmfDefaultCertPemPath        = "./cert/amf.pem"
+	AmfDefaultPrivateKeyPath     = "./cert/amf.key"
+	AmfDefaultConfigPath         = "./config/amfcfg.yaml"
+	AmfDefaultNfInstanceIdEnvVar = "AMF_NF_INSTANCE_ID"
+	AmfSbiDefaultIPv4            = "127.0.0.18"
+	AmfSbiDefaultPort            = 8000
+	AmfSbiDefaultScheme          = "https"
+	AmfMetricsDefaultEnabled     = false
+	AmfMetricsDefaultPort        = 9091
+	AmfMetricsDefaultScheme      = "https"
+	AmfMetricsDefaultNamespace   = "free5gc"
+	AmfDefaultNrfUri             = "https://127.0.0.10:8000"
+	sctpDefaultNumOstreams       = 3
+	sctpDefaultMaxInstreams      = 5
+	sctpDefaultMaxAttempts       = 2
+	sctpDefaultMaxInitTimeout    = 2
+	ngapDefaultPort              = 38412
+	AmfCallbackResUriPrefix      = "/namf-callback/v1"
+	AmfCommResUriPrefix          = "/namf-comm/v1"
+	AmfEvtsResUriPrefix          = "/namf-evts/v1"
+	AmfLocResUriPrefix           = "/namf-loc/v1"
+	AmfMtResUriPrefix            = "/namf-mt/v1"
+	AmfOamResUriPrefix           = "/namf-oam/v1"
+	AmfMbsComResUriPrefix        = "/namf-mbs-comm/v1"
+	AmfMbsBCResUriPrefix         = "/namf-mbs-bc/v1"
 )
 
 type Config struct {
@@ -75,6 +77,7 @@ type Info struct {
 
 type Configuration struct {
 	AmfName                string            `yaml:"amfName,omitempty" valid:"required, type(string)"`
+	NfInstanceId           string            `yaml:"nfInstanceId,omitempty" valid:"optional,uuidv4"`
 	NgapIpList             []string          `yaml:"ngapIpList,omitempty" valid:"required"`
 	NgapPort               int               `yaml:"ngapPort,omitempty" valid:"optional,port"`
 	Sbi                    *Sbi              `yaml:"sbi,omitempty" valid:"required"`
@@ -104,6 +107,8 @@ type Configuration struct {
 	Locality               string            `yaml:"locality,omitempty" valid:"type(string),optional"`
 	SCTP                   *Sctp             `yaml:"sctp,omitempty" valid:"optional"`
 	DefaultUECtxReq        bool              `yaml:"defaultUECtxReq,omitempty" valid:"type(bool),optional"`
+	NgapWorkerPoolSize     int               `yaml:"ngapWorkerPoolSize,omitempty" valid:"type(int),optional"`
+	NgapTaskBufferSize     int               `yaml:"ngapTaskBufferSize,omitempty" valid:"type(int),optional"`
 }
 
 type Logger struct {
@@ -124,6 +129,10 @@ func (c *Configuration) validate() (bool, error) {
 		if len(errs) > 0 {
 			return false, error(errs)
 		}
+	}
+
+	if c.NfInstanceId == "" {
+		c.NfInstanceId = uuid.New().String()
 	}
 
 	if c.Sbi != nil {
@@ -337,6 +346,31 @@ func (m *Metrics) validate() (bool, error) {
 		return false, error(errs)
 	}
 	return true, nil
+}
+
+func (c *Config) GetNfInstanceId() string {
+	c.RLock()
+	defer c.RUnlock()
+
+	var nfInstanceId string
+
+	logger.CfgLog.Debugf("Fetching nfInstanceId from env var \"%s\"", AmfDefaultNfInstanceIdEnvVar)
+
+	if nfInstanceId = os.Getenv(AmfDefaultNfInstanceIdEnvVar); nfInstanceId == "" {
+		logger.CfgLog.Debugf("No value found for \"%s\" env, fallback on config nfInstanceId : %s",
+			AmfDefaultNfInstanceIdEnvVar, c.Configuration.NfInstanceId)
+		return c.Configuration.NfInstanceId
+	}
+
+	if err := uuid.Validate(nfInstanceId); err != nil {
+		logger.CfgLog.Errorf("Env var \"%s\" is not a valid uuid, "+
+			"fallback on configuration nfInstanceId : %s", AmfDefaultNfInstanceIdEnvVar, c.Configuration.NfInstanceId)
+		return c.Configuration.NfInstanceId
+	}
+
+	logger.CfgLog.Debugf("nfInstanceId from %s : %s", AmfDefaultNfInstanceIdEnvVar, nfInstanceId)
+
+	return nfInstanceId
 }
 
 type Sbi struct {
@@ -998,4 +1032,23 @@ func (c *Config) GetCertKeyPath() string {
 	c.RLock()
 	defer c.RUnlock()
 	return c.Configuration.Sbi.Tls.Key
+}
+
+func (c *Config) GetNgapWorkerPoolSize() int {
+	c.RLock()
+	defer c.RUnlock()
+	if c.Configuration != nil && c.Configuration.NgapWorkerPoolSize > 0 {
+		return c.Configuration.NgapWorkerPoolSize
+	}
+	// 0 indicates that the caller (e.g., InitScheduler) should auto-detect based on CPU cores
+	return 0
+}
+
+func (c *Config) GetNgapTaskBufferSize() int {
+	c.RLock()
+	defer c.RUnlock()
+	if c.Configuration != nil && c.Configuration.NgapTaskBufferSize > 0 {
+		return c.Configuration.NgapTaskBufferSize
+	}
+	return 1000 // Default buffer size
 }
